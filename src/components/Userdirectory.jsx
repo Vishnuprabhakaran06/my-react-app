@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from "react";
-import "./Userdirectory.css";
+import "./Userdirectory.css"; // Keep or remove if not using
 
 export default function UsersDirectory() {
   const [users, setUsers] = useState([]);
@@ -9,19 +9,21 @@ export default function UsersDirectory() {
   const [query, setQuery] = useState("");
   const [companyFilter, setCompanyFilter] = useState("");
   const [cityFilter, setCityFilter] = useState("");
-  const [viewMode, setViewMode] = useState("grid");
+  const [viewMode, setViewMode] = useState(localStorage.getItem("viewMode") || "grid");
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [sortBy, setSortBy] = useState({ key: "id", dir: "asc" });
+  const [sortBy, setSortBy] = useState(JSON.parse(localStorage.getItem("sortBy")) || { key: "id", dir: "asc" });
 
   const searchTimeout = useRef(null);
   const [debouncedQuery, setDebouncedQuery] = useState("");
 
+  // Debounce search
   useEffect(() => {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
     searchTimeout.current = setTimeout(() => setDebouncedQuery(query.trim()), 300);
     return () => clearTimeout(searchTimeout.current);
   }, [query]);
 
+  // Fetch users
   useEffect(() => {
     let cancelled = false;
     async function fetchUsers() {
@@ -43,18 +45,18 @@ export default function UsersDirectory() {
     return () => { cancelled = true; };
   }, []);
 
+  // Options for filters
   const companyOptions = useMemo(() => {
-    const s = new Set();
-    users.forEach((u) => s.add(u.company?.name || ""));
-    return [...s].filter(Boolean).sort();
+    const s = new Set(users.map(u => u.company?.name).filter(Boolean));
+    return [...s].sort();
   }, [users]);
 
   const cityOptions = useMemo(() => {
-    const s = new Set();
-    users.forEach((u) => s.add(u.address?.city || ""));
-    return [...s].filter(Boolean).sort();
+    const s = new Set(users.map(u => u.address?.city).filter(Boolean));
+    return [...s].sort();
   }, [users]);
 
+  // Search match
   function matches(user, q) {
     if (!q) return true;
     const lower = q.toLowerCase();
@@ -69,20 +71,33 @@ export default function UsersDirectory() {
     );
   }
 
+  // Filtered & sorted users
   const filtered = useMemo(() => {
-    let list = users.filter((u) => matches(u, debouncedQuery));
-    if (companyFilter) list = list.filter((u) => u.company?.name === companyFilter);
-    if (cityFilter) list = list.filter((u) => u.address?.city === cityFilter);
+    let list = users.filter(u => matches(u, debouncedQuery));
+    if (companyFilter) list = list.filter(u => u.company?.name === companyFilter);
+    if (cityFilter) list = list.filter(u => u.address?.city === cityFilter);
 
     return [...list].sort((a, b) => {
-      const aVal = String(a[sortBy.key] ?? (a.company?.name ?? "")).toLowerCase();
-      const bVal = String(b[sortBy.key] ?? (b.company?.name ?? "")).toLowerCase();
+      const aVal = getSortableValue(a, sortBy.key);
+      const bVal = getSortableValue(b, sortBy.key);
       if (aVal < bVal) return sortBy.dir === "asc" ? -1 : 1;
       if (aVal > bVal) return sortBy.dir === "asc" ? 1 : -1;
       return 0;
     });
   }, [users, debouncedQuery, companyFilter, cityFilter, sortBy]);
 
+  function getSortableValue(obj, key) {
+    switch (key) {
+      case "company":
+        return String(obj.company?.name || "").toLowerCase();
+      case "city":
+        return String(obj.address?.city || "").toLowerCase();
+      default:
+        return String(obj[key] ?? "").toLowerCase();
+    }
+  }
+
+  // Select / deselect
   function toggleSelect(id) {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -90,20 +105,28 @@ export default function UsersDirectory() {
       return next;
     });
   }
-
   function clearSelection() {
     setSelectedIds(new Set());
   }
+  function selectAllVisible() {
+    setSelectedIds(new Set(filtered.map(u => u.id)));
+  }
+  function deselectAll() {
+    setSelectedIds(new Set());
+  }
 
-  function exportCSV(useSelected = false) {
+  // CSV export
+  async function exportCSV(useSelected = false) {
     const rows = useSelected ? filtered.filter(u => selectedIds.has(u.id)) : filtered;
-    if (rows.length === 0) {
-      alert("No rows to export.");
-      return;
-    }
+    if (!rows.length) return showToast("No rows to export.");
 
-    const headers = ["id","name","username","email","city","company","website","phone"];
-    const escapeCell = (v) => `"${String(v ?? "").replace(/"/g,'""')}"`;
+    if (!window.confirm(`Export ${rows.length} row(s) to CSV?`)) return;
+
+    showToast("Generating CSV...");
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    const headers = ["id", "name", "username", "email", "city", "company", "website", "phone"];
+    const escapeCell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = [headers.join(",")];
 
     rows.forEach(r => {
@@ -123,35 +146,60 @@ export default function UsersDirectory() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `users_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = `users_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    showToast("CSV export complete.");
   }
 
+  // Sorting
   function handleSort(key) {
-    setSortBy(s => ({ key, dir: s.key === key && s.dir === "asc" ? "desc" : "asc" }));
+    setSortBy(s => {
+      const next = { key, dir: s.key === key && s.dir === "asc" ? "desc" : "asc" };
+      localStorage.setItem("sortBy", JSON.stringify(next));
+      return next;
+    });
   }
 
   const tableRef = useRef(null);
+
+  // Keyboard navigation & shortcuts
   useEffect(() => {
     function onKey(e) {
-      if (viewMode !== "table" || !tableRef.current) return;
-      const focusable = tableRef.current.querySelectorAll("[data-row] button, [data-row] a, [data-row] input");
-      if (!focusable.length) return;
-      const idx = Array.prototype.indexOf.call(focusable, document.activeElement);
-      if (e.key === "ArrowDown") {
+      // Table navigation
+      if (viewMode === "table" && tableRef.current) {
+        const focusable = tableRef.current.querySelectorAll("[data-row] button, [data-row] a, [data-row] input");
+        if (focusable.length) {
+          const idx = Array.prototype.indexOf.call(focusable, document.activeElement);
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            focusable[Math.min(focusable.length - 1, idx + 1)]?.focus();
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            focusable[Math.max(0, idx - 1)]?.focus();
+          }
+        }
+      }
+
+      // Keyboard shortcuts
+      if (e.ctrlKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        focusable[Math.min(focusable.length - 1, idx + 1)]?.focus();
-      } else if (e.key === "ArrowUp") {
+        selectAllVisible();
+      } else if (e.ctrlKey && e.key.toLowerCase() === "d") {
         e.preventDefault();
-        focusable[Math.max(0, idx - 1)]?.focus();
+        deselectAll();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewMode, filtered]);
+
+  // Persist view mode
+  useEffect(() => {
+    localStorage.setItem("viewMode", viewMode);
+  }, [viewMode]);
 
   return (
     <div className="container">
@@ -160,7 +208,6 @@ export default function UsersDirectory() {
           <h1 className="title">Users Directory</h1>
           <p className="subtitle">Responsive, accessible, and exportable user directory.</p>
         </div>
-
         <div className="actions">
           <button onClick={() => setViewMode(v => v === "grid" ? "table" : "grid")} className="btn-secondary">
             {viewMode === "grid" ? "Table View" : "Grid View"}
@@ -173,17 +220,15 @@ export default function UsersDirectory() {
       <section className="filters">
         <input
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={e => setQuery(e.target.value)}
           placeholder="Search by name, username, email, city, company..."
           className="search-box"
         />
-
-        <select value={companyFilter} onChange={(e) => setCompanyFilter(e.target.value)} className="select-box">
+        <select value={companyFilter} onChange={e => setCompanyFilter(e.target.value)} className="select-box">
           <option value="">All Companies</option>
           {companyOptions.map(c => <option key={c}>{c}</option>)}
         </select>
-
-        <select value={cityFilter} onChange={(e) => setCityFilter(e.target.value)} className="select-box">
+        <select value={cityFilter} onChange={e => setCityFilter(e.target.value)} className="select-box">
           <option value="">All Cities</option>
           {cityOptions.map(c => <option key={c}>{c}</option>)}
         </select>
@@ -195,16 +240,17 @@ export default function UsersDirectory() {
 
           <div className="table-controls">
             <span>{filtered.length} result(s)</span>
-            <div>
-              <button onClick={clearSelection} className="btn-secondary small">Clear Selection</button>
-              <button onClick={() => handleSort("name")} className="btn-link small">
+            <div className="button-group">
+              <button onClick={clearSelection} className="btn-secondary">Clear Selection</button>
+              <button onClick={() => handleSort("name")} className="btn-link">
                 Name {sortBy.key === "name" ? (sortBy.dir === "asc" ? "▲" : "▼") : ""}
               </button>
-              <button onClick={() => handleSort("username")} className="btn-link small">
+              <button onClick={() => handleSort("username")} className="btn-link">
                 Username {sortBy.key === "username" ? (sortBy.dir === "asc" ? "▲" : "▼") : ""}
               </button>
             </div>
           </div>
+
 
           {viewMode === "grid" ? (
             <div className="grid">
@@ -224,15 +270,15 @@ export default function UsersDirectory() {
                   <p>{u.phone}</p>
                   <p>{u.address?.city}, {u.address?.zipcode}</p>
                   <div className="card-actions">
-                    <a href={`http://${sanitizeUrl(u.website)}`} target="_blank" rel="noopener noreferrer">Visit</a>
-                    <button onClick={() => alert(JSON.stringify(publicProfile(u), null, 2))}>Quick View</button>
+                    <a href={sanitizeUrl(u.website)} target="_blank" rel="noopener noreferrer">Visit</a>
+                    <button onClick={() => showToast(JSON.stringify(publicProfile(u), null, 2))}>Quick View</button>
                   </div>
                 </div>
               ))}
             </div>
           ) : (
             <div ref={tableRef} className="table-container">
-              <table className="user-table">
+              <table className="user-table" aria-label="Users table">
                 <thead>
                   <tr>
                     <th>Select</th><th>ID</th><th>Name</th><th>Username</th>
@@ -262,13 +308,13 @@ export default function UsersDirectory() {
   );
 }
 
+// Utilities
 function sanitizeMail(email) {
   return String(email || "").replace(/\r|\n|\"/g, "");
 }
 function sanitizeUrl(url) {
   const s = String(url || "").replace(/\r|\n|\"/g, "").trim();
-  if (!/^https?:\/\//i.test(s)) return s;
-  return s;
+  return s.startsWith("http://") || s.startsWith("https://") ? s : `http://${s}`;
 }
 function publicProfile(u) {
   return {
@@ -281,4 +327,20 @@ function publicProfile(u) {
     company: u.company?.name,
     city: u.address?.city
   };
+}
+
+// Toast notification
+function showToast(message) {
+  const el = document.createElement("div");
+  el.textContent = message;
+  el.style.position = "fixed";
+  el.style.bottom = "1rem";
+  el.style.right = "1rem";
+  el.style.background = "#333";
+  el.style.color = "#fff";
+  el.style.padding = "0.5rem 1rem";
+  el.style.borderRadius = "0.5rem";
+  el.style.zIndex = 9999;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
 }
